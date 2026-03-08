@@ -22,6 +22,7 @@
           :isOpponent="true"
           :currentScore="totalScores[1 - myPlayerIndex]"
         />
+        <span v-if="oppKoiCalled" class="koi-badge opponent-koi">来来!</span>
       </div>
 
       <!-- Center Field -->
@@ -107,8 +108,9 @@
           :captures="myCaptures" 
           :isOpponent="false"
           :currentScore="totalScores[myPlayerIndex]"
-          :yakuNames="myCapturesYakuNames"
+          :yakuNames="activeYakuNames"
         />
+        <span v-if="myKoiCalled" class="koi-badge my-koi">来来!</span>
         <Hand 
           :cards="myHand" 
           :isOpponent="false"
@@ -119,6 +121,11 @@
         <div v-if="!isMyTurn && phase === 'playing'" class="turn-overlay">
           <span>对手回合...</span>
         </div>
+      </div>
+
+      <!-- Connection status indicator -->
+      <div class="connection-indicator" :class="status">
+        <span class="dot"></span>
       </div>
     </div>
   </div>
@@ -133,28 +140,20 @@ import Field from './components/Field.vue'
 import Captures from './components/Captures.vue'
 
 const {
-  phase, roomCode, myPlayerIndex, message,
+  status, phase, roomCode, myPlayerIndex, message,
   field, myHand, oppHandCount, drawPileCount,
   myCaptures, oppCaptures, currentPlayer, gamePhase,
   matchCandidates, drawnCard,
   roundScores, totalScores, currentRound, totalRounds,
   selectedCard, newYaku, showYakuBanner,
   showRoundResult, showGameOver, roundWinner, opponentLeft,
-  isMyTurn, matchableIds,
+  isMyTurn, matchableIds, myKoiCalled, oppKoiCalled,
+  activeYakuNames,
   createRoom, joinRoom, playHandCard, selectFieldCard,
   chooseKoiKoi, chooseStop, backToLobby
 } = useGame()
 
 const showKoiKoiDecision = computed(() => gamePhase.value === 'koiKoiDecision')
-
-// Helper to deduce exact yaku tags for myself (since useGame just gives captures)
-// Note: real calculation is backend, we just map rough names for frontend display if needed.
-// Actually, simple frontend tag calculation is optional since the server sends `newYaku` which we flash.
-// But to keep it persistent we could compute it or leave it empty in `yakuNames`.
-const myCapturesYakuNames = computed(() => {
-  // Simple check for basic tags if needed, or leave to backend
-  return []
-})
 </script>
 
 <style scoped>
@@ -211,6 +210,42 @@ const myCapturesYakuNames = computed(() => {
   letter-spacing: 2px;
   border-radius: 8px;
 }
+
+/* Koi-Koi badge */
+.koi-badge {
+  position: absolute;
+  right: 8px;
+  background: var(--color-primary);
+  color: white;
+  font-size: 11px;
+  font-weight: bold;
+  padding: 2px 8px;
+  border-radius: 10px;
+  z-index: 30;
+  animation: pulse-glow 2s infinite ease-in-out;
+}
+.opponent-koi { top: 4px; }
+.my-koi { bottom: 70px; }
+
+/* Connection status indicator */
+.connection-indicator {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 300;
+}
+.connection-indicator .dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #666;
+}
+.connection-indicator.connected .dot { background: #4CAF50; }
+.connection-indicator.connecting .dot { background: #FFC107; animation: blink 1s infinite; }
+.connection-indicator.error .dot { background: #f44336; }
+.connection-indicator.disconnected .dot { background: #666; }
+@keyframes blink { 50% { opacity: 0.3; } }
 
 /* Notifications */
 .notifications {

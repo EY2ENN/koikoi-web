@@ -1,10 +1,23 @@
-// 游戏状态管理
+// 游戏状态管理 — 单例 store（Fix 13.3）
+// Fix 13.2: ROOM_JOINED 后正确设置 phase = 'waiting'
+// Fix 13.4: requestIdleCallback 降级
+// Fix 13.6: 持久 yakuNames 累积
+// Fix 13.7: koiCalled 通过 return 暴露给 UI
+// Fix 13.8: phase 注释与实际逻辑对齐
+// Fix 13.9: backToLobby 完整清空游戏数据
 import { ref, shallowRef, computed } from 'vue'
 import { useWebSocket } from './useWebSocket'
 
+// ===== 单例缓存 =====
+let _instance = null
+
 export function useGame() {
-  // 网络
-  const phase = ref('lobby') // lobby | waiting | playing | roundResult | gameOver
+  if (_instance) return _instance
+
+  // 网络/大厅状态
+  // phase 实际只用于控制根视图：lobby -> waiting -> playing
+  // 结算和终局通过 showRoundResult / showGameOver overlay flag 控制
+  const phase = ref('lobby') // lobby | waiting | playing
   const roomCode = ref('')
   const myPlayerIndex = ref(0)
   const message = ref('')
@@ -35,6 +48,9 @@ export function useGame() {
   const roundWinner = ref('')
   const opponentLeft = ref(false)
 
+  // 13.6: 持久累积的已达成役名列表
+  const activeYakuNames = ref([])
+
   const isMyTurn = computed(() => currentPlayer.value === myPlayerIndex.value)
 
   // matchable：我的回合 & selectHandCard 阶段，手牌在场上有对应月份
@@ -43,6 +59,10 @@ export function useGame() {
     const fieldMonths = new Set(field.value.map(c => c.month))
     return new Set(myHand.value.filter(c => fieldMonths.has(c.month)).map(c => c.id))
   })
+
+  // 13.7: 我方是否已经叫过来来
+  const myKoiCalled = computed(() => koiCalled.value[myPlayerIndex.value])
+  const oppKoiCalled = computed(() => koiCalled.value[1 - myPlayerIndex.value])
 
   function handleMsg(msg) {
     switch (msg.type) {
@@ -55,11 +75,14 @@ export function useGame() {
       case 'ROOM_JOINED':
         myPlayerIndex.value = msg.playerIndex ?? 0
         roomCode.value = msg.roomCode
+        // 13.2: 加入房间后也切换到等待界面
+        phase.value = 'waiting'
         message.value = '已加入房间，等待游戏开始…'
         break
 
       case 'GAME_START':
         phase.value = 'playing'
+        activeYakuNames.value = [] // 新局清空
         applyState(msg)
         break
 
@@ -68,10 +91,15 @@ export function useGame() {
         break
 
       case 'YAKU_FORMED':
-        // Haptic feedback for major event
         if (navigator.vibrate) navigator.vibrate([100, 50, 100])
         newYaku.value = msg.newYaku ?? []
         showYakuBanner.value = true
+        // 13.6: 累积已达成的役名
+        for (const y of (msg.newYaku ?? [])) {
+          if (y.name && !activeYakuNames.value.includes(y.name)) {
+            activeYakuNames.value = [...activeYakuNames.value, y.name]
+          }
+        }
         setTimeout(() => { showYakuBanner.value = false }, 2500)
         break
 
@@ -88,6 +116,7 @@ export function useGame() {
         roundScores.value = msg.roundScores ?? [0, 0]
         totalScores.value = msg.totalScores ?? [0, 0]
         showRoundResult.value = true
+        activeYakuNames.value = [] // 局结束清空
         break
       }
 
@@ -139,13 +168,15 @@ export function useGame() {
 
   const { status, connect, send, disconnect } = useWebSocket(handleMsg)
 
+  // 13.4: requestIdleCallback 兼容降级
+  const scheduleIdle = typeof requestIdleCallback === 'function'
+    ? requestIdleCallback
+    : (cb) => setTimeout(cb, 1)
+
   function preloadAssets() {
-    // Only run if in browser and not already preloaded
     if (typeof window === 'undefined' || window.__KOIKOI_PRELOADED) return
     window.__KOIKOI_PRELOADED = true
-
-    requestIdleCallback(() => {
-      // Preload all 48 cards
+    scheduleIdle(() => {
       for (let i = 0; i < 48; i++) {
         const img = new Image()
         img.src = `/cards/${i}.svg`
@@ -167,7 +198,7 @@ export function useGame() {
 
   function playHandCard(card) {
     if (!isMyTurn.value || gamePhase.value !== 'selectHandCard') return
-    if (navigator.vibrate) navigator.vibrate(15) // Light haptic tap
+    if (navigator.vibrate) navigator.vibrate(15)
     selectedCard.value = card
     send({ type: 'PLAY_HAND_CARD', cardId: card.id })
   }
@@ -175,7 +206,7 @@ export function useGame() {
   function selectFieldCard(card) {
     if (!isMyTurn.value) return
     if (gamePhase.value !== 'selectFieldMatch' && gamePhase.value !== 'drawPhase') return
-    if (navigator.vibrate) navigator.vibrate(25) // Slightly heavier tap for match confirmation
+    if (navigator.vibrate) navigator.vibrate(25)
     send({ type: 'SELECT_FIELD_CARD', cardId: card.id })
     selectedCard.value = null
   }
@@ -189,16 +220,39 @@ export function useGame() {
     send({ type: 'KOI_KOI_DECISION', callKoi: false })
   }
 
+  // 13.9: 返回大厅时完全清空所有游戏数据
   function backToLobby() {
     disconnect()
     phase.value = 'lobby'
-    showGameOver.value = false
-    showRoundResult.value = false
-    opponentLeft.value = false
+    roomCode.value = ''
+    myPlayerIndex.value = 0
+    message.value = ''
+    field.value = []
+    myHand.value = []
+    oppHandCount.value = 0
+    drawPileCount.value = 0
+    myCaptures.value = []
+    oppCaptures.value = []
+    currentPlayer.value = 0
+    gamePhase.value = 'selectHandCard'
+    matchCandidates.value = []
+    drawnCard.value = null
+    koiCalled.value = [false, false]
+    roundScores.value = [0, 0]
+    totalScores.value = [0, 0]
+    currentRound.value = 1
+    totalRounds.value = 12
     selectedCard.value = null
+    newYaku.value = []
+    showYakuBanner.value = false
+    showRoundResult.value = false
+    showGameOver.value = false
+    roundWinner.value = ''
+    opponentLeft.value = false
+    activeYakuNames.value = []
   }
 
-  return {
+  _instance = {
     // state
     status, phase, roomCode, myPlayerIndex, message,
     field, myHand, oppHandCount, drawPileCount,
@@ -207,10 +261,12 @@ export function useGame() {
     roundScores, totalScores, currentRound, totalRounds,
     selectedCard, newYaku, showYakuBanner,
     showRoundResult, showGameOver, roundWinner, opponentLeft,
+    activeYakuNames,
     // computed
-    isMyTurn, matchableIds,
+    isMyTurn, matchableIds, myKoiCalled, oppKoiCalled,
     // actions
     createRoom, joinRoom, playHandCard, selectFieldCard,
     chooseKoiKoi, chooseStop, backToLobby, preloadAssets
   }
+  return _instance
 }
